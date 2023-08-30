@@ -11,22 +11,39 @@ use regex::Regex;
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct GetOptions {
+    #[arg(short = 'i', long = "input_sampleID")]
     input_sample_id: String,
+    #[arg(short = 'f', long = "file_suffix")]
     file_suffix: String,
+    #[arg(short = 'H', long = "Human_reference_genome")]
     human_reference_genome: String,
+    #[arg(short = 'T', long = "TE_reference_genomes")]
     te_reference_genome: String,
+    #[arg(short = 'I', long = "Input_directory")]
     input_directory: String,
+    #[arg(short = 'O', long = "Output_directory")]
     output_directory: String,
+    #[arg(short = 'n', long = "number_of_reads")]
     number_of_reads: Option<u32>,
+    #[arg(short = 'd', long = "data_type")]
     data_type: String,
+    #[arg(short = 's', long = "sequencing_type")]
     sequencing_type: String,
+    #[arg(short = 'l', long = "length_insertsize")]
     length_insert_size: Option<f32>,
+    #[arg(short = 'L', long = "L_std_insertsize")]
     l_std_insert_size: Option<f32>,
+    #[arg(short = 'r', long = "read_len")]
     read_len: Option<u32>,
+    #[arg(short = 't', long = "threads")]
     threads: Option<u32>,
+    #[arg(short = 'S', long = "Split")]
     split: Option<u32>,
+    #[arg(short = 'm', long = "multiple_BAM")]
     multiple_bam: bool,
+    #[arg(short = 'B', long = "BWA_MEM")]
     bwa_mem: bool,
+    #[arg(short = 'G', long = "Genotype")]
     genotype: bool,
 }
 impl GetOptions {
