@@ -3,4 +3,4 @@ ERVCaller-rs is a rust port of the popular tool designed to accurately detect an
 
 
 ## Background
-The original ERVCaller package was written in perl and it's on [this project] (https://github.com/xunchen85/ERVcaller)
+The original ERVCaller package was written in perl and it's on [this project](https://github.com/xunchen85/ERVcaller)
