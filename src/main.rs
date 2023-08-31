@@ -1,12 +1,12 @@
-use std::fs::{self, File};
-use std::io::{BufRead, BufReader, BufWriter, Write};
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::{collections::HashMap, env};
-
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Error, Result};
 use clap::{command, error::ErrorKind, Parser};
 use regex::Regex;
+use std::f32::consts::E;
+use std::fs::{self, File};
+use std::io::{BufRead, BufReader, BufWriter, LineWriter, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Command, ExitStatus};
+use std::{collections::HashMap, env};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -62,18 +62,19 @@ impl GetOptions {
         }
 
         if self.input_directory.is_empty() {
-            self.input_directory = env::current_dir()
-                .unwrap()
-                .into_os_string()
-                .into_string()
-                .unwrap(); //perl add /
+            //perl add /
+            if let Ok(current_dir) = env::current_dir() {
+                self.input_directory = current_dir.to_string_lossy().into_owned();
+            } else {
+                eprintln!("Failed to get current directory.");
+            }
         }
         if self.output_directory.is_empty() {
-            self.output_directory = env::current_dir()
-                .unwrap()
-                .into_os_string()
-                .into_string()
-                .unwrap(); //perl add /
+            if let Ok(current_dir) = env::current_dir() {
+                self.output_directory = current_dir.to_string_lossy().into_owned();
+            } else {
+                eprintln!("Failed to get current directory.");
+            }
         }
         if !self.number_of_reads.is_some() {
             self.number_of_reads = Some(3);
@@ -101,6 +102,8 @@ fn main() -> Result<()> {
     // my $bwa_d="";
     // my $samtools_d="";
     // my $SE_MEI_d="";
+    const DEFAULT_THREADS: u32 = 1;
+
     let bowtie2_d = "";
     let tophat_d = "";
     let bwa_d = "";
@@ -177,12 +180,13 @@ fn main() -> Result<()> {
     let header3 = "Sample_ID Is_Split_mode ... Genotype\n".to_string();
 
     /////////////////////////////////
-    /// ////////////////////////////
-    if !PathBuf::from(&args.output_directory).is_dir() {
-        fs::create_dir(&args.output_directory).expect("Failed to create directory");
+    /// create output director passed from cli args if not exists
+    if let Err(err) = create_directory_if_not_exists(&args.output_directory) {
+        eprintln!("Failed to create directory: {}", err);
     }
 
-    //line 213
+    //line 213 on Perl
+    //set working directory...
     if let Err(err) = env::set_current_dir(&args.output_directory) {
         eprintln!("Failed to change directory: {}", err);
     }
@@ -298,32 +302,17 @@ fn main() -> Result<()> {
 
         //
         if args.split.is_some() || &args.sequencing_type == "single-end" {
-            Command::new("gunzip")
-                .arg("-c")
-                .arg(format!(
-                    "{}_soft.fastq.gz >{}_1sf.fastq",
-                    &args.input_sample_id, &args.input_sample_id
-                ))
-                .output()
-                .expect("Failed to execute command");
-
+            gunzip(&format!(
+                "{}_soft.fastq.gz >{}_1sf.fastq",
+                &args.input_sample_id, &args.input_sample_id
+            ))?;
             // Capture the output of the first gunzip and write it to output_1sf
 
             if !args.bwa_mem {
-                Command::new("gunzip")
-                    .arg("-c")
-                    .arg(format!(
-                        "{}_h1_soft.fastq.gz >>{}_1sf.fastq",
-                        &args.input_sample_id, &args.input_sample_id
-                    ))
-                    .output()
-                    .expect("Failed to execute command");
-
-                // let mut output_1sf_append = std::fs::OpenOptions::new()
-                //     .append(true)
-                //     .open(format!("{}_1sf.fastq", input_sample_id))
-                //     .expect("Failed to open file for appending");
-
+                gunzip(&format!(
+                    "{}_h1_soft.fastq.gz >>{}_1sf.fastq",
+                    &args.input_sample_id, &args.input_sample_id
+                ))?;
                 // Capture the output of the second gunzip and append it to output_1sf_append
             }
         }
@@ -334,52 +323,37 @@ fn main() -> Result<()> {
             if !args.bwa_mem {
                 // system("mv ${input_sampleID}_h1_h1_1.1fq ${input_sampleID}_1.1fq");
                 // system("mv ${input_sampleID}_h1_h1_2.1fq ${input_sampleID}_2.1fq");
-                Command::new("mv")
-                    .arg(format!("{}_h1_h1_1.1fq", &args.input_sample_id))
-                    .arg(format!("{}_1.1fq", &args.input_sample_id))
-                    .output()
-                    .expect("Failed to execute command");
-
-                Command::new("mv")
-                    .arg(format!("{}_h1_h1_2.1fq", &args.input_sample_id))
-                    .arg(format!("{}_2.1fq", &args.input_sample_id))
-                    .output()
-                    .expect("Failed to execute command");
+                move_files_fs(
+                    &format!("{}_h1_h1_1.1fq", &args.input_sample_id),
+                    &format!("{}_1.1fq", &args.input_sample_id),
+                )?;
+                move_files_fs(
+                    &format!("{}_h1_h1_2.1fq", &args.input_sample_id),
+                    &format!("{}_2.1fq", &args.input_sample_id),
+                )?;
             } else {
-                Command::new("mv")
-                    .args(&[
-                        format!("{}_h1_1.1fq", &args.input_sample_id),
-                        format!("{}_1.1fq", &args.input_sample_id),
-                    ])
-                    .status()
-                    .expect("Failed to execute command");
-                Command::new("mv")
-                    .args(&[
-                        format!("{}_h1_2.1fq", &args.input_sample_id),
-                        format!("{}_2.1fq", &args.input_sample_id),
-                    ])
-                    .status()
-                    .expect("Failed to execute command");
+                move_files_fs(
+                    &format!("{}_h1_1.1fq", &args.input_sample_id),
+                    &format!("{}_1.1fq", &args.input_sample_id),
+                )?;
+                move_files_fs(
+                    &format!("{}_h1_2.1fq", &args.input_sample_id),
+                    &format!("{}_2.1fq", &args.input_sample_id),
+                )?;
             }
         } else {
             println!("Not paird-end sequence type");
             if !args.bwa_mem {
-                Command::new("mv")
-                    .args(&[
-                        format!("{}_h1_h1.1fq", &args.input_sample_id),
-                        format!("{}.1fq", &args.input_sample_id),
-                    ])
-                    .status()
-                    .expect("Failed to execute command");
+                move_files_fs(
+                    &format!("{}_h1_h1.1fq", &args.input_sample_id),
+                    &format!("{}.1fq", &args.input_sample_id),
+                )?;
             } else {
                 //bwa_MEM
-                Command::new("mv")
-                    .args(&[
-                        format!("{}_h1.1fq", &args.input_sample_id),
-                        format!("{}.1fq", &args.input_sample_id),
-                    ])
-                    .status()
-                    .expect("Failed to execute command");
+                move_files_fs(
+                    &format!("{}_h1.1fq", &args.input_sample_id),
+                    &format!("{}.1fq", &args.input_sample_id),
+                )?;
             }
         }
     } else {
@@ -387,31 +361,20 @@ fn main() -> Result<()> {
         align_to_hg(&args.input_sample_id, &args.file_suffix);
         convert_bamtofastq(&args.input_sample_id);
         if args.split.is_some() || &args.sequencing_type == "single-end" {
-            Command::new("gunzip")
-                .arg("-c")
-                .arg(format!(
-                    "{}_soft.fastq.gz >{}_1sf.fastq",
-                    &args.input_sample_id, &args.input_sample_id
-                ))
-                .output()
-                .expect("Failed to execute command");
+            gunzip(&format!(
+                "{}_soft.fastq.gz >{}_1sf.fastq",
+                &args.input_sample_id, &args.input_sample_id
+            ))?;
         }
         if &args.sequencing_type == "paired-end" {
-            Command::new("mv")
-                .args(&[
-                    format!("{}_h1_1.1fq", &args.input_sample_id),
-                    format!("{}_1.1fq", &args.input_sample_id),
-                ])
-                .status()
-                .expect("Failed to execute command");
-
-            Command::new("mv")
-                .args(&[
-                    format!("{}_h1_2.1fq", &args.input_sample_id),
-                    format!("{}_2.1fq", &args.input_sample_id),
-                ])
-                .status()
-                .expect("Failed to execute command");
+            move_files_fs(
+                &format!("{}_h1_1.1fq", &args.input_sample_id),
+                &format!("{}_1.1fq", &args.input_sample_id),
+            )?;
+            move_files_fs(
+                &format!("{}_h1_2.1fq", &args.input_sample_id),
+                &format!("{}_2.1fq", &args.input_sample_id),
+            )?;
         }
     }
 
@@ -454,20 +417,20 @@ fn main() -> Result<()> {
 
         tmp1.clear();
     }
-
-    Command::new("mv")
-        .args(&[
-            format!("{}_1sf.fastq2", &args.input_sample_id),
-            format!("{}_1sf.fastq", &args.input_sample_id),
-        ])
-        .status()?;
+    move_files_fs(
+        &format!("{}_1sf.fastq2", &args.input_sample_id),
+        &format!("{}_1sf.fastq", &args.input_sample_id),
+    )?;
 
     // 2.3 Chimeric reads amd Split reads
     println!("\nChimeric and split reads...\n=====================================\n");
     if &args.sequencing_type == "paired-end" {
-        Command::new(format!("{}bwa",&bwa_d))
-            .arg(format!("mem -t {} -k 19 -r 1.5 -c 100000 -m 50 -T 30 -h 10000 -a -Y -M $TE_reference_genomes {}_1.1fq {}_2.1fq >{}_vsu.sam", &args.threads.unwrap(), &args.input_sample_id, &args.input_sample_id, &args.input_sample_id))
-            .output()?;
+        // Command::new(format!("{}bwa",&bwa_d))
+        //     .arg(format!("mem -t {} -k 19 -r 1.5 -c 100000 -m 50 -T 30 -h 10000 -a -Y -M {} {}_1.1fq {}_2.1fq >{}_vsu.sam", &args.threads.unwrap_or(DEFAULT_THREADS),&args.te_reference_genome, &args.input_sample_id, &args.input_sample_id, &args.input_sample_id))
+        //     .output()?;
+        if let Err(err) = run_bwa_mem(&bwa_d, &format!("mem -t {} -k 19 -r 1.5 -c 100000 -m 50 -T 30 -h 10000 -a -Y -M {} {}_1.1fq {}_2.1fq >{}_vsu.sam", &args.threads.unwrap_or(DEFAULT_THREADS),&args.te_reference_genome, &args.input_sample_id, &args.input_sample_id, &args.input_sample_id)){
+            eprintln!("Error: Could not run bwa mem command >>> {}", err)
+        };
     } else {
         Command::new("touch")
             .arg(format!("{}_vsu.sam", &args.input_sample_id))
@@ -475,26 +438,228 @@ fn main() -> Result<()> {
         //File::create(format!("{}_vsu.sam", &args.input_sample_id))?;
     }
     Command::new("touch")
-            .arg(format!("{}_all_breakpoint", &args.input_sample_id))
-            .status()?;
+        .arg(format!("{}_all_breakpoint", &args.input_sample_id))
+        .status()?;
+    if &args.sequencing_type == "single-end"
+        || (sequencing_type == "paired-end" && args.split.is_some())
+    {
+        if let Err(err) = run_bwa_mem(&bwa_d, &format!("mem -t {} -k 19 -r 1.5 -c 100000 -m 50 -T 20 -h 10000 -a -Y -M {} {}_1sf.fastq >{}_vsoft.sam", &args.threads.unwrap_or(DEFAULT_THREADS),&args.te_reference_genome, &args.input_sample_id, &args.input_sample_id)){
+            eprintln!("Error: Could not run bwa mem command >>> {}", err)
+        };
+        if let Err(err) = run_any_system_cmdlet(
+            "perl",
+            &format!(
+                "{}Scripts/Soft_clipping_transfer.pl -f {}_vsoft.sam -o {}_vsoft_breakpoint",
+                &directory, &args.input_sample_id, &args.input_sample_id
+            ),
+        ) {
+            eprintln!("Error: Could not run perl command >>> {}", err)
+        }
+        if let Err(err) = run_any_system_cmdlet(
+            "cat",
+            &format!(
+                "{}_vsoft_breakpoint >>{}_all_breakpoint",
+                &args.input_sample_id, &args.input_sample_id
+            ),
+        ) {
+            eprintln!("Error: Could not run cat command >>> {}", err)
+        }
+        if let Err(err) =
+            run_any_system_cmdlet("rm", &format!("{}_vsoft_breakpoint", &args.input_sample_id))
+        {
+            eprintln!("Error: Could not run rm command >>> {}", err)
+        }
+    }
 
-    
+    if &args.sequencing_type == "paired-end" {
+        if let Err(err) = run_any_system_cmdlet(
+            &format!("{}samtools", &samtools_d),
+            &format!(
+                "view {}_sm.bam >{}_sm.sam",
+                &args.input_sample_id, &args.input_sample_id
+            ),
+        ) {
+            eprintln!("Error: Could not run samtools command >>> {}", err)
+        }
+
+        //refactor the huge spaghetti to call_type func
+        let (sm_file_path, type_file_path) = call_type(&args, alignment_score)?;
+
+        if let Err(err) = run_any_system_cmdlet("perl", &format!("{}Scripts/Break_point_calling.pl -type {} -position {} -TE {}_vsu.sam -alignment_score {} -o {}", &directory, &type_file_path, &sm_file_path, &args.input_sample_id, &alignment_score, &args.input_sample_id)){
+            eprintln!("Error: Could not run breakpoint calling script Err >>> {}", err);
+        }
+        if let Err(err) = run_any_system_cmdlet(
+            "cat",
+            &format!(
+                "{}_breakpoint >>{}_all_breakpoint",
+                &args.input_sample_id, &args.input_sample_id
+            ),
+        ) {
+            eprintln!("Error: Could not run command Err >>> {}", err);
+        }
+        if let Err(err) =
+            run_any_system_cmdlet("rm", &format!("{}_breakpoint", &args.input_sample_id))
+        {
+            eprintln!("Error: Could not run rm command >>> {}", err)
+        }
+    }
+
+    //Run FilteredFastq perl script
+    if let Err(err) = run_any_system_cmdlet("perl", &format!("{}Scripts/Filtered_fastq.pl {}", &directory, &args.input_sample_id)){
+        eprintln!("Error: Could not run Filtered_fastq.pl script Err >>> {}", err);
+    }
 
 
-
-
-
-
-
-
+    //##### 2.4 Improper Reads
 
     Ok(())
 }
 
+fn call_type(args: &GetOptions, alignment_score: i32) -> Result<(String, String), Error> {
+    let sm_file_path = format!("{}_sm.sam", &args.input_sample_id);
+    let sm_file = File::create(&sm_file_path)?;
+    let type_file_path = format!("{}.type", &args.input_sample_id);
+    let type_file = File::create(&type_file_path)?;
+    let sm_reader = BufReader::new(sm_file);
+    let mut type_writer = LineWriter::new(type_file);
+    for sm_1 in sm_reader.lines() {
+        let sm_1 = sm_1?;
+        let sm_1_parts: Vec<&str> = sm_1.split_whitespace().collect();
+        let mut aS = "NA";
+        let mut xs = "NA";
+
+        if sm_1_parts[2] != "*" {
+            for i in 11..sm_1_parts.len() {
+                if let Some(captured) = sm_1_parts[i].strip_prefix("AS:i:") {
+                    aS = captured;
+                }
+                if let Some(captured) = sm_1_parts[i].strip_prefix("XS:i:") {
+                    xs = captured;
+                }
+            }
+        }
+
+        if aS == "NA" {
+            continue;
+        } else if sm_1_parts[1].parse::<i32>().unwrap() % 256 >= 128
+            && (aS.parse::<i32>().unwrap() >= alignment_score
+                && aS.parse::<i32>().unwrap() >= 2 * xs.parse::<i32>().unwrap())
+        {
+            writeln!(
+                type_writer,
+                "{} L {} {} {}\n",
+                sm_1_parts[0], aS, xs, sm_1_parts[5]
+            )?;
+        } else if aS.parse::<i32>().unwrap() >= alignment_score
+            && aS.parse::<i32>().unwrap() >= 2 * xs.parse::<i32>().unwrap()
+        {
+            writeln!(
+                type_writer,
+                "{} R {} {} {}\n",
+                sm_1_parts[0], aS, xs, sm_1_parts[5]
+            )?;
+        }
+    }
+    Ok((sm_file_path.to_owned(), type_file_path.to_owned()))
+}
+
+fn parse_as_xs(line: &str) -> (&str, &str) {
+    let mut aS = "NA";
+    let mut xs = "NA";
+
+    let parts: Vec<&str> = line.split_whitespace().collect();
+
+    if parts[2] != "*" {
+        for part in parts.iter().skip(11) {
+            if let Some(captured) = part.strip_prefix("AS:i:") {
+                aS = captured;
+            }
+            if let Some(captured) = part.strip_prefix("XS:i:") {
+                xs = captured;
+            }
+        }
+    }
+
+    (aS, xs)
+}
+
+fn run_bwa_mem(execution_dir: &str, command: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let status = Command::new(format!("{}bwa", execution_dir))
+        .arg(command)
+        .status()?;
+
+    if status.success() {
+        println!("Command executed successfully");
+        Ok(())
+    } else {
+        eprintln!("Failed to execute command");
+        Err("Failed to execute command".into())
+    }
+}
+fn run_any_system_cmdlet(program: &str, args: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let status = Command::new(program).arg(args).status()?;
+
+    if status.success() {
+        println!("Command executed successfully");
+        Ok(())
+    } else {
+        eprintln!("Failed to execute command");
+        Err("Failed to execute command".into())
+    }
+}
 fn align_to_hg(format: &str, arg: &str) {
     todo!()
 }
 
 fn convert_bamtofastq(input_sample_id: &str) {
     todo!()
+}
+
+///execute mv system command
+/// @param = source, destination
+/// returns Result
+fn move_files_fs(source: &str, destination: &str) -> Result<()> {
+    match Command::new("mv").args(&[source, destination]).status() {
+        Ok(status) => {
+            if status.success() {
+                println!("Files moved successfully");
+            } else {
+                eprintln!("Failed to move files.");
+            }
+        }
+        Err(err) => {
+            eprintln!("Error: {}", err);
+        }
+    }
+
+    Ok(())
+}
+///execute gunzip system command
+/// @param = file_pipe_args e.g file1.gz > file0
+/// returns Result
+fn gunzip(file_pipe_args: &str) -> Result<()> {
+    match Command::new("gunzip")
+        .arg("-c")
+        .arg(file_pipe_args)
+        .status()
+    {
+        Ok(status) => {
+            if status.success() {
+                println!("Files gunzipped successfully");
+            } else {
+                eprintln!("Failed to execute gunzip command.");
+            }
+        }
+        Err(err) => {
+            eprintln!("Error: {}", err);
+        }
+    }
+    Ok(())
+}
+
+fn create_directory_if_not_exists(path: &str) -> Result<(), std::io::Error> {
+    if !Path::new(path).is_dir() {
+        fs::create_dir(path)?;
+    }
+    Ok(())
 }
